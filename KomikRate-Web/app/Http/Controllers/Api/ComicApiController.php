@@ -64,7 +64,7 @@ class ComicApiController extends Controller
                 'alternative_title' => $comic->alternative_title,
                 'author'            => $comic->author,
                 'type'              => $comic->type,
-                'cover_image'       => $comic->cover_image_url, // Ini sudah benar sekarang
+                'cover_image'       => $comic->cover_image_url,
                 'status'            => $comic->status,
                 'average_rating'    => $comic->ratings_reviews_avg_rating
                                         ? round($comic->ratings_reviews_avg_rating, 1)
@@ -124,7 +124,7 @@ class ComicApiController extends Controller
     }
 
     /**
-     * Submit review.
+     * Submit review (Create atau Update).
      * POST /api/comics/{id}/review
      */
     public function storeReview(StoreReviewRequest $request, int $id): JsonResponse
@@ -144,6 +144,37 @@ class ComicApiController extends Controller
             'message' => $wasUpdated ? 'Review berhasil diperbarui.' : 'Review berhasil ditambahkan.',
             'data'    => $review,
         ], $wasUpdated ? 200 : 201);
+    }
+
+    /**
+     * Update review (edit review yang sudah ada).
+     * PUT /api/reviews/{id}
+     * 
+     * ✨ ENDPOINT BARU
+     */
+    public function updateReview(StoreReviewRequest $request, int $id): JsonResponse
+    {
+        $review = RatingReview::where('id', $id)
+            ->where('user_id', $request->user()->id) // pastikan hanya bisa edit milik sendiri
+            ->first();
+
+        if (!$review) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Review tidak ditemukan atau bukan milik Anda.',
+            ], 404);
+        }
+
+        $review->update([
+            'rating'      => $request->rating,
+            'review_text' => $request->review_text,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Review berhasil diperbarui.',
+            'data'    => $review,
+        ]);
     }
 
     /**

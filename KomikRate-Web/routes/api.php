@@ -23,11 +23,13 @@ Route::get('/comics/{id}', [ComicApiController::class, 'show']);
 |--------------------------------------------------------------------------
 */
 Route::middleware('auth:sanctum')->group(function () {
+    // Auth
     Route::post('/logout',           [AuthController::class, 'logout']);
     Route::get('/me',                [AuthController::class, 'me']);
-    Route::put('/profile/update',    [AuthController::class, 'updateProfile']); // ← tambah
-    Route::post('/comics/{id}/review', [ComicApiController::class, 'storeReview']);
+    Route::put('/profile/update',    [AuthController::class, 'updateProfile']);
 
-    Route::delete('/reviews/{id}',      [ComicApiController::class, 'destroyReview']);
-
+    // Reviews (Create, Read, Update, Delete)
+    Route::post('/comics/{id}/review',    [ComicApiController::class, 'storeReview']);
+    Route::put('/reviews/{id}',           [ComicApiController::class, 'updateReview']); // ✨ BARU - Edit review
+    Route::delete('/reviews/{id}',        [ComicApiController::class, 'destroyReview']);
 });
