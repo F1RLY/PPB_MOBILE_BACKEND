@@ -10,20 +10,17 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 
 class AuthController extends Controller
 {
-    /**
-     * Register user baru.
-     * POST /api/register
-     */
     public function register(RegisterRequest $request): JsonResponse
     {
         $user = User::create([
             'name'     => $request->name,
             'email'    => $request->email,
             'password' => Hash::make($request->password),
-            'role'     => 'user_casual', // Default role
+            'role'     => 'user_casual',
         ]);
 
         $token = $user->createToken('komikrate-mobile')->plainTextToken;
@@ -43,10 +40,6 @@ class AuthController extends Controller
         ], 201);
     }
 
-    /**
-     * Login user.
-     * POST /api/login
-     */
     public function login(LoginRequest $request): JsonResponse
     {
         if (!Auth::attempt($request->only('email', 'password'))) {
@@ -56,8 +49,7 @@ class AuthController extends Controller
             ], 401);
         }
 
-        $user  = Auth::user();
-        // Hapus token lama agar tidak menumpuk (opsional, tapi best practice)
+        $user = Auth::user();
         $user->tokens()->delete();
         $token = $user->createToken('komikrate-mobile')->plainTextToken;
 
@@ -76,10 +68,6 @@ class AuthController extends Controller
         ]);
     }
 
-    /**
-     * Logout user (hapus token aktif).
-     * POST /api/logout
-     */
     public function logout(Request $request): JsonResponse
     {
         $request->user()->currentAccessToken()->delete();
@@ -90,10 +78,6 @@ class AuthController extends Controller
         ]);
     }
 
-    /**
-     * Get data user yang sedang login.
-     * GET /api/me
-     */
     public function me(Request $request): JsonResponse
     {
         return response()->json([
@@ -102,30 +86,19 @@ class AuthController extends Controller
         ]);
     }
 
-    /**
-     * PUT /api/profile/update
-     */
     public function updateProfile(Request $request): JsonResponse
     {
         $user = $request->user();
 
         $request->validate([
-            'name'         => ['sometimes', 'string', 'max:255'],
-            'email'        => ['sometimes', 'email', 'unique:users,email,' . $user->id],
-            'password'     => ['sometimes', 'string', 'min:8', 'confirmed'],
+            'name'     => ['sometimes', 'string', 'max:255'],
+            'email'    => ['sometimes', 'email', 'unique:users,email,' . $user->id],
+            'password' => ['sometimes', 'string', 'min:8', 'confirmed'],
         ]);
 
-        if ($request->filled('name')) {
-            $user->name = $request->name;
-        }
-
-        if ($request->filled('email')) {
-            $user->email = $request->email;
-        }
-
-        if ($request->filled('password')) {
-            $user->password = Hash::make($request->password);
-        }
+        if ($request->filled('name'))     $user->name     = $request->name;
+        if ($request->filled('email'))    $user->email    = $request->email;
+        if ($request->filled('password')) $user->password = Hash::make($request->password);
 
         $user->save();
 
@@ -137,6 +110,61 @@ class AuthController extends Controller
                 'name'  => $user->name,
                 'email' => $user->email,
                 'role'  => $user->role,
+            ],
+        ]);
+    }
+
+    public function googleLogin(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_token' => ['required', 'string'],
+        ]);
+
+        $googleResponse = Http::get('https://oauth2.googleapis.com/tokeninfo', [
+            'id_token' => $request->id_token,
+        ]);
+
+        if ($googleResponse->failed() || isset($googleResponse->json()['error_description'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Token Google tidak valid.',
+            ], 401);
+        }
+
+        $googleData = $googleResponse->json();
+        $email      = $googleData['email'] ?? null;
+        $name       = $googleData['name']  ?? 'Google User';
+
+        if (!$email) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Email tidak ditemukan dari Google.',
+            ], 400);
+        }
+
+        $user = User::firstOrCreate(
+            ['email' => $email],
+            [
+                'name'     => $name,
+                'password' => Hash::make(str()->random(32)),
+                'role'     => 'user_casual',
+            ]
+        );
+
+        $user->tokens()->delete();
+        $token = $user->createToken('komikrate-mobile')->plainTextToken;
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Login Google berhasil.',
+            'data'    => [
+                'user'  => [
+                    'id'    => $user->id,
+                    'name'  => $user->name,
+                    'email' => $user->email,
+                    'role'  => $user->role,
+                ],
+                'token' => $token,
             ],
         ]);
     }

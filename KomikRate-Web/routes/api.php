@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Route;
 */
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login',    [AuthController::class, 'login']);
+Route::post('/auth/google', [AuthController::class, 'googleLogin']);
 
 // Komik bisa dilihat tanpa login
 Route::get('/comics',      [ComicApiController::class, 'index']);
@@ -26,4 +27,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me',                [AuthController::class, 'me']);
     Route::put('/profile/update',    [AuthController::class, 'updateProfile']); // ← tambah
     Route::post('/comics/{id}/review', [ComicApiController::class, 'storeReview']);
+
+    Route::delete('/reviews/{id}',      [ComicApiController::class, 'destroyReview']);
+
 });

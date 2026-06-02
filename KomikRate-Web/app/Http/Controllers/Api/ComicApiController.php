@@ -145,4 +145,29 @@ class ComicApiController extends Controller
             'data'    => $review,
         ], $wasUpdated ? 200 : 201);
     }
+
+    /**
+     * Hapus review milik user yang sedang login.
+     * DELETE /api/reviews/{id}
+     */
+    public function destroyReview(Request $request, int $id): JsonResponse
+    {
+        $review = RatingReview::where('id', $id)
+            ->where('user_id', $request->user()->id) // pastikan hanya bisa hapus milik sendiri
+            ->first();
+
+        if (!$review) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Review tidak ditemukan atau bukan milik Anda.',
+            ], 404);
+        }
+
+        $review->delete(); // soft delete karena model pakai SoftDeletes
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Review berhasil dihapus.',
+        ]);
+    }
 }
