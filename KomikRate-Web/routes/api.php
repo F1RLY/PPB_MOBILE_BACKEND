@@ -30,6 +30,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Reviews (Create, Read, Update, Delete)
     Route::post('/comics/{id}/review',    [ComicApiController::class, 'storeReview']);
-    Route::put('/reviews/{id}',           [ComicApiController::class, 'updateReview']); // ✨ BARU - Edit review
+    Route::put('/reviews/{id}',           [ComicApiController::class, 'updateReview']); 
     Route::delete('/reviews/{id}',        [ComicApiController::class, 'destroyReview']);
+    Route::get('/me/reviews',        [ComicApiController::class, 'getUserReviews']);
+    Route::get('/me/reviews/stats',  [ComicApiController::class, 'getUserReviewStats']);
+    
 });

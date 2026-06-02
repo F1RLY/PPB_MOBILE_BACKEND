@@ -201,4 +201,91 @@ class ComicApiController extends Controller
             'message' => 'Review berhasil dihapus.',
         ]);
     }
+
+    public function getUserReviews(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        
+        $query = RatingReview::where('user_id', $user->id)
+            ->with([
+                'comic' => fn($q) => $q->select('id', 'title', 'alternative_title', 'author', 'type', 'cover_image', 'status')
+                                         ->with(['genres:id,name,slug']),
+            ]);
+ 
+        // Filter: by genre (optional)
+        if ($request->filled('genre')) {
+            $query->whereHas('comic.genres', fn($q) => $q->where('slug', $request->genre));
+        }
+ 
+        // Sorting
+        match ($request->get('sort', 'newest')) {
+            'oldest'         => $query->oldest(),
+            'highest_rating' => $query->orderByDesc('rating'),
+            'lowest_rating'  => $query->orderBy('rating'),
+            default          => $query->latest(), // 'newest'
+        };
+ 
+        $perPage = min((int) $request->get('per_page', 10), 50); // max 50 per page
+        $reviews = $query->paginate($perPage);
+ 
+        // Transform: include comic info + metadata
+        $transformedReviews = $reviews->getCollection()->map(function (RatingReview $review) {
+            return [
+                'id'             => $review->id,
+                'rating'         => $review->rating,
+                'review_text'    => $review->review_text,
+                'created_at'     => $review->created_at->toIso8601String(),
+                'updated_at'     => $review->updated_at->toIso8601String(),
+                'is_editable'    => true,  // user selalu bisa edit review sendiri
+                'is_deletable'   => true,  // user selalu bisa delete review sendiri
+                'comic'          => [
+                    'id'                  => $review->comic->id,
+                    'title'               => $review->comic->title,
+                    'alternative_title'   => $review->comic->alternative_title,
+                    'author'              => $review->comic->author,
+                    'type'                => $review->comic->type,
+                    'cover_image'         => $review->comic->cover_image_url,
+                    'status'              => $review->comic->status,
+                    'genres'              => $review->comic->genres,
+                ],
+            ];
+        });
+ 
+        $reviews->setCollection($transformedReviews);
+ 
+        return response()->json([
+            'success' => true,
+            'data'    => $reviews,
+        ]);
+    }
+ 
+    /**
+     * GET /api/me/reviews/stats
+     * Get summary stats untuk user reviews (future feature).
+     * Returns: total reviews, average rating, genres reviewed
+     */
+    public function getUserReviewStats(Request $request): JsonResponse
+    {
+        $user = $request->user();
+ 
+        $totalReviews = RatingReview::where('user_id', $user->id)->count();
+        $averageRating = RatingReview::where('user_id', $user->id)->avg('rating');
+        
+        $genresReviewed = RatingReview::where('user_id', $user->id)
+            ->with('comic.genres')
+            ->get()
+            ->pluck('comic.genres')
+            ->flatten()
+            ->unique('id')
+            ->values();
+ 
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'total_reviews'    => $totalReviews,
+                'average_rating'   => $averageRating ? round($averageRating, 1) : null,
+                'genres_reviewed'  => $genresReviewed,
+            ],
+        ]);
+    }
 }
