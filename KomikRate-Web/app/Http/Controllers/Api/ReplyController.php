@@ -8,16 +8,23 @@ use App\Http\Requests\Api\UpdateReplyRequest;
 use App\Models\Reply;
 use App\Models\RatingReview;
 use App\Models\ReplyNotification;
+use App\Services\FcmService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class ReplyController extends Controller
 {
+    protected $fcmService;
+
+    public function __construct(FcmService $fcmService)
+    {
+        $this->fcmService = $fcmService;
+    }
+
     /**
      * POST /api/reviews/{reviewId}/reply
      * 
-     * Buat reply baru untuk review tertentu
-     * Support nested replies (jika ada parent_reply_id)
+     * Create reply & trigger FCM notification
      */
     public function store(CreateReplyRequest $request, int $reviewId): JsonResponse
     {
@@ -25,13 +32,13 @@ class ReplyController extends Controller
         $review = RatingReview::findOrFail($reviewId);
         $user = $request->user();
 
-        // Validate parent_reply jika ada
+        // Validate parent reply if exists
         if ($request->filled('parent_reply_id')) {
             $parentReply = Reply::find($request->parent_reply_id);
             if (!$parentReply || $parentReply->review_id !== $reviewId) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Reply parent tidak valid untuk review ini.',
+                    'message' => 'Parent reply invalid untuk review ini.',
                 ], 400);
             }
         }
@@ -47,6 +54,21 @@ class ReplyController extends Controller
         // Load relationships
         $reply->load('user', 'childReplies.user');
 
+        // 🔔 TRIGGER NOTIFICATION
+        if ($review->user_id !== $user->id) {
+            // Buat notification record
+            $notification = ReplyNotification::create([
+                'reply_id'        => $reply->id,
+                'recipient_id'    => $review->user_id,
+                'sender_id'       => $user->id,
+                'delivery_status' => 'pending',
+            ]);
+
+            // Send FCM asynchronously (background job better)
+            // Untuk now, send langsung (bisa di-queue nanti)
+            $this->fcmService->sendReplyNotification($notification);
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Reply berhasil dibuat.',
@@ -56,16 +78,11 @@ class ReplyController extends Controller
 
     /**
      * GET /api/reviews/{reviewId}/replies
-     * 
-     * Dapatkan semua replies untuk review tertentu
-     * Support pagination dan nested replies
      */
     public function getByReview(Request $request, int $reviewId): JsonResponse
     {
-        // Verify review exists
         $review = RatingReview::findOrFail($reviewId);
 
-        // Get top-level replies with nested structure
         $page = (int) $request->get('page', 1);
         $perPage = min((int) $request->get('per_page', 10), 50);
 
@@ -74,10 +91,8 @@ class ReplyController extends Controller
             ->latest()
             ->paginate($perPage, ['*'], 'page', $page);
 
-        // Eager load user dan child replies
         $replies->load('user', 'childReplies.user', 'childReplies.childReplies.user');
 
-        // Transform response
         $formattedReplies = $replies->map(function ($reply) {
             return $this->formatReplyWithChildren($reply);
         });
@@ -96,8 +111,6 @@ class ReplyController extends Controller
 
     /**
      * GET /api/replies/{replyId}
-     * 
-     * Dapatkan detail single reply dengan nested children
      */
     public function show(int $replyId): JsonResponse
     {
@@ -114,23 +127,22 @@ class ReplyController extends Controller
     /**
      * PUT /api/replies/{replyId}
      * 
-     * Update/edit reply yang sudah ada
-     * Hanya bisa diedit oleh author
+     * Edit reply (author only)
      */
     public function update(UpdateReplyRequest $request, int $replyId): JsonResponse
     {
         $reply = Reply::findOrFail($replyId);
         $user = $request->user();
 
-        // Check authorization - hanya author yang bisa edit
+        // Check authorization
         if ($reply->user_id !== $user->id) {
             return response()->json([
                 'success' => false,
-                'message' => 'Anda tidak memiliki akses untuk edit reply ini.',
+                'message' => 'Anda tidak bisa edit reply ini.',
             ], 403);
         }
 
-        // Check if reply is soft deleted
+        // Check if soft deleted
         if ($reply->trashed()) {
             return response()->json([
                 'success' => false,
@@ -139,15 +151,12 @@ class ReplyController extends Controller
         }
 
         // Update
-        $reply->update([
-            'content' => $request->content,
-        ]);
-
+        $reply->update(['content' => $request->content]);
         $reply->load('user', 'childReplies.user');
 
         return response()->json([
             'success' => true,
-            'message' => 'Reply berhasil diperbarui.',
+            'message' => 'Reply berhasil diupdate.',
             'data'    => $this->formatReplyResponse($reply),
         ]);
     }
@@ -155,8 +164,7 @@ class ReplyController extends Controller
     /**
      * DELETE /api/replies/{replyId}
      * 
-     * Hapus reply (soft delete)
-     * Hanya bisa dihapus oleh author
+     * Delete reply (soft delete, author only)
      */
     public function destroy(Request $request, int $replyId): JsonResponse
     {
@@ -167,7 +175,7 @@ class ReplyController extends Controller
         if ($reply->user_id !== $user->id) {
             return response()->json([
                 'success' => false,
-                'message' => 'Anda tidak memiliki akses untuk hapus reply ini.',
+                'message' => 'Anda tidak bisa hapus reply ini.',
             ], 403);
         }
 
@@ -183,30 +191,20 @@ class ReplyController extends Controller
     /**
      * GET /api/me/replies
      * 
-     * Dapatkan replies yang dibuat oleh user yang login
-     * Support sorting dan pagination
+     * Get user's own replies
      */
     public function getMyReplies(Request $request): JsonResponse
     {
         $user = $request->user();
 
-        // Query
         $query = Reply::byUser($user->id)
             ->with('user', 'review.comic');
 
-        // Sorting
-        match ($request->get('sort', 'newest')) {
-            'oldest' => $query->oldest(),
-            default  => $query->latest(),
-        };
-
-        // Pagination
         $page = (int) $request->get('page', 1);
         $perPage = min((int) $request->get('per_page', 10), 50);
 
-        $replies = $query->paginate($perPage, ['*'], 'page', $page);
+        $replies = $query->latest()->paginate($perPage, ['*'], 'page', $page);
 
-        // Transform
         $formattedReplies = $replies->map(function ($reply) {
             return $this->formatReplyResponse($reply);
         });
@@ -217,8 +215,28 @@ class ReplyController extends Controller
                 'data'         => $formattedReplies,
                 'current_page' => $replies->currentPage(),
                 'last_page'    => $replies->lastPage(),
-                'per_page'     => $replies->perPage(),
                 'total'        => $replies->total(),
+            ],
+        ]);
+    }
+
+    /**
+     * GET /api/me/replies/unread-count
+     * 
+     * Get unread notification count
+     */
+    public function getUnreadCount(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $unreadCount = ReplyNotification::where('recipient_id', $user->id)
+            ->where('is_read', false)
+            ->count();
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'unread_count' => $unreadCount,
             ],
         ]);
     }
@@ -226,14 +244,12 @@ class ReplyController extends Controller
     /**
      * POST /api/replies/{replyId}/mark-as-read
      * 
-     * Mark notification sebagai read
-     * (User telah membaca reply yang mereka terima)
+     * Mark notification as read
      */
     public function markNotificationAsRead(Request $request, int $replyId): JsonResponse
     {
         $user = $request->user();
 
-        // Update all unread notifications untuk reply ini yang ke-user
         $updated = ReplyNotification::where('reply_id', $replyId)
             ->where('recipient_id', $user->id)
             ->where('is_read', false)
@@ -251,34 +267,12 @@ class ReplyController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/me/replies/unread-count
-     * 
-     * Dapatkan jumlah notifikasi belum dibaca
-     * Untuk badge di Flutter app
-     */
-    public function getUnreadCount(Request $request): JsonResponse
-    {
-        $user = $request->user();
-
-        $unreadCount = ReplyNotification::forUser($user->id)
-            ->unread()
-            ->count();
-
-        return response()->json([
-            'success' => true,
-            'data'    => [
-                'unread_count' => $unreadCount,
-            ],
-        ]);
-    }
-
     // ───────────────────────────────────────────────────────────────────────
     // HELPER METHODS
     // ───────────────────────────────────────────────────────────────────────
 
     /**
-     * Format reply response (simple format)
+     * Format simple reply
      */
     private function formatReplyResponse(Reply $reply): array
     {
@@ -299,14 +293,12 @@ class ReplyController extends Controller
     }
 
     /**
-     * Format reply dengan nested children
-     * Recursively format child replies
+     * Format reply with nested children
      */
     private function formatReplyWithChildren(Reply $reply): array
     {
         $formatted = $this->formatReplyResponse($reply);
 
-        // Add child replies
         $formatted['child_replies'] = $reply->childReplies
             ->map(fn($child) => $this->formatReplyWithChildren($child))
             ->values();

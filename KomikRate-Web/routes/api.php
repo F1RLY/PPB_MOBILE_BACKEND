@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ComicApiController;
+use App\Http\Controllers\Api\ReplyController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -19,10 +20,9 @@ Route::get('/comics/{id}', [ComicApiController::class, 'show']);
 
 // GET semua replies untuk review tertentu
 Route::get('/reviews/{reviewId}/replies', [ReplyController::class, 'getByReview']);
- 
-// GET detail single reply
 Route::get('/replies/{replyId}', [ReplyController::class, 'show']);
  
+
 
 /*
 |--------------------------------------------------------------------------
@@ -42,15 +42,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me/reviews',        [ComicApiController::class, 'getUserReviews']);
     Route::get('/me/reviews/stats',  [ComicApiController::class, 'getUserReviewStats']);
     
+    // Replies (NEW)
     Route::post('/reviews/{reviewId}/reply', [ReplyController::class, 'store']);
-    // UPDATE: Edit reply milik sendiri
     Route::put('/replies/{replyId}', [ReplyController::class, 'update']);
-    // DELETE: Hapus reply milik sendiri
     Route::delete('/replies/{replyId}', [ReplyController::class, 'destroy']);
-    // GET: Dapatkan replies yang dibuat oleh user yang login
     Route::get('/me/replies', [ReplyController::class, 'getMyReplies']);
-    // GET: Dapatkan jumlah notifikasi belum dibaca
     Route::get('/me/replies/unread-count', [ReplyController::class, 'getUnreadCount']);
-    // POST: Mark notifikasi sebagai read
     Route::post('/replies/{replyId}/mark-as-read', [ReplyController::class, 'markNotificationAsRead']);
+    
+    // FCM Token
+    Route::post('/fcm-token', [AuthController::class, 'updateFcmToken']);
 });
