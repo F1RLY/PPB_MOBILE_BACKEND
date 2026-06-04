@@ -2,84 +2,126 @@
 
 namespace App\Services;
 
-use Kreait\Firebase\Factory;
-use Kreait\Firebase\Messaging\CloudMessage;
-use Kreait\Firebase\ServiceAccount;
 use App\Models\ReplyNotification;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class FcmService
 {
-    protected $messaging;
-
-    public function __construct()
+    private function getAccessToken(): ?string
     {
         try {
-            $serviceAccount = ServiceAccount::fromJsonFile(
-                config('firebase.credentials')
+            $keyFile = storage_path('app/firebase-key.json');
+            $key     = json_decode(file_get_contents($keyFile), true);
+
+            $now   = time();
+            $claim = [
+                'iss'   => $key['client_email'],
+                'scope' => 'https://www.googleapis.com/auth/firebase.messaging',
+                'aud'   => 'https://oauth2.googleapis.com/token',
+                'iat'   => $now,
+                'exp'   => $now + 3600,
+            ];
+
+            // Buat JWT manual
+            $header  = base64_encode(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
+            $payload = base64_encode(json_encode($claim));
+            $header  = str_replace(['+', '/', '='], ['-', '_', ''], $header);
+            $payload = str_replace(['+', '/', '='], ['-', '_', ''], $payload);
+
+            $data = "$header.$payload";
+            openssl_sign($data, $signature, $key['private_key'], 'SHA256');
+            $signature = str_replace(
+                ['+', '/', '='],
+                ['-', '_', ''],
+                base64_encode($signature)
             );
 
-            $firebase = (new Factory)
-                ->withServiceAccount($serviceAccount)
-                ->create();
+            $jwt = "$data.$signature";
 
-            $this->messaging = $firebase->getMessaging();
+            // Tukar JWT dengan access token
+            $response = Http::asForm()->post('https://oauth2.googleapis.com/token', [
+                'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+                'assertion'  => $jwt,
+            ]);
+
+            return $response->json('access_token');
         } catch (\Exception $e) {
-            Log::error('Firebase init failed: ' . $e->getMessage());
-            $this->messaging = null;
+            Log::error('FCM get token error: ' . $e->getMessage());
+            return null;
         }
     }
 
-    /**
-     * Send notification ke device user
-     */
     public function sendReplyNotification(ReplyNotification $notification): bool
     {
         try {
-            if (!$this->messaging) {
-                throw new \Exception('Firebase messaging not initialized');
-            }
-
-            $token = $notification->recipient->fcm_token;
+            $token = $notification->recipient->fcm_token ?? null;
             if (!$token) {
                 Log::warning("No FCM token for user {$notification->recipient_id}");
                 return false;
             }
 
             $notification->load('reply.user', 'reply.review.comic');
-            $sender = $notification->sender->name ?? 'Someone';
-            $comic = $notification->reply->review->comic->title ?? 'a comic';
 
-            $message = CloudMessage::fromArray([
-                'token' => $token,
-                'notification' => [
-                    'title' => 'Balasan Baru',
-                    'body'  => "{$sender} membalas review Anda",
-                ],
-                'data' => [
-                    'reply_id'   => (string) $notification->reply->id,
-                    'review_id'  => (string) $notification->reply->review_id,
-                    'comic_id'   => (string) $notification->reply->review->comic_id,
-                ],
-                'android' => [
-                    'priority' => 'high',
+            $sender   = $notification->sender->name             ?? 'Someone';
+            $comic    = $notification->reply->review->comic->title ?? 'a comic';
+            $comicId  = $notification->reply->review->comic_id     ?? 0;
+            $reviewId = $notification->reply->review_id            ?? 0;
+            $replyId  = $notification->reply->id                   ?? 0;
+
+            $accessToken = $this->getAccessToken();
+            if (!$accessToken) {
+                Log::error('FCM: gagal dapat access token');
+                return false;
+            }
+
+            $keyFile   = json_decode(file_get_contents(storage_path('app/firebase-key.json')), true);
+            $projectId = $keyFile['project_id'];
+
+            $response = Http::withHeaders([
+                'Authorization' => "Bearer $accessToken",
+                'Content-Type'  => 'application/json',
+            ])->post("https://fcm.googleapis.com/v1/projects/{$projectId}/messages:send", [
+                'message' => [
+                    'token' => $token,
+                    'notification' => [
+                        'title' => 'Balasan Baru 💬',
+                        'body'  => "{$sender} membalas review kamu pada \"{$comic}\"",
+                    ],
+                    'data' => [
+                        'comic_id'    => (string) $comicId,
+                        'review_id'   => (string) $reviewId,
+                        'reply_id'    => (string) $replyId,
+                        'comic_title' => $comic,
+                        'sender_name' => $sender,
+                    ],
+                    'android' => [
+                        'priority' => 'high',
+                    ],
                 ],
             ]);
 
-            $this->messaging->send($message);
-            
-            $notification->update([
-                'delivery_status' => 'sent',
-                'sent_at' => now(),
-            ]);
+            if ($response->successful()) {
+                $notification->update([
+                    'delivery_status' => 'sent',
+                    'sent_at'         => now(),
+                ]);
+                Log::info("FCM sent OK to user {$notification->recipient_id}");
+                return true;
+            }
 
-            return true;
-
-        } catch (\Exception $e) {
-            Log::error('FCM send failed: ' . $e->getMessage());
+            Log::error('FCM failed: ' . $response->body());
             $notification->update([
                 'delivery_status' => 'failed',
-                'error_message' => $e->getMessage(),
+                'error_message'   => $response->body(),
+            ]);
+            return false;
+
+        } catch (\Exception $e) {
+            Log::error('FCM exception: ' . $e->getMessage());
+            $notification->update([
+                'delivery_status' => 'failed',
+                'error_message'   => $e->getMessage(),
             ]);
             return false;
         }
@@ -88,16 +130,26 @@ class FcmService
     public function sendTestNotification(string $token): bool
     {
         try {
-            $message = CloudMessage::fromArray([
-                'token' => $token,
-                'notification' => [
-                    'title' => 'Test',
-                    'body' => 'FCM works! ✅',
+            $accessToken = $this->getAccessToken();
+            if (!$accessToken) return false;
+
+            $keyFile   = json_decode(file_get_contents(storage_path('app/firebase-key.json')), true);
+            $projectId = $keyFile['project_id'];
+
+            $response = Http::withHeaders([
+                'Authorization' => "Bearer $accessToken",
+                'Content-Type'  => 'application/json',
+            ])->post("https://fcm.googleapis.com/v1/projects/{$projectId}/messages:send", [
+                'message' => [
+                    'token'        => $token,
+                    'notification' => [
+                        'title' => 'Test KomikRate',
+                        'body'  => 'FCM works! ✅',
+                    ],
                 ],
             ]);
 
-            $this->messaging->send($message);
-            return true;
+            return $response->successful();
         } catch (\Exception $e) {
             Log::error('Test FCM failed: ' . $e->getMessage());
             return false;

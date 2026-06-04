@@ -28,11 +28,9 @@ class ReplyController extends Controller
      */
     public function store(CreateReplyRequest $request, int $reviewId): JsonResponse
     {
-        // Verify review exists
         $review = RatingReview::findOrFail($reviewId);
-        $user = $request->user();
+        $user   = $request->user();
 
-        // Validate parent reply if exists
         if ($request->filled('parent_reply_id')) {
             $parentReply = Reply::find($request->parent_reply_id);
             if (!$parentReply || $parentReply->review_id !== $reviewId) {
@@ -43,7 +41,7 @@ class ReplyController extends Controller
             }
         }
 
-        // Create reply
+        // ✅ Simpan reply dulu
         $reply = Reply::create([
             'review_id'       => $reviewId,
             'user_id'         => $user->id,
@@ -51,22 +49,26 @@ class ReplyController extends Controller
             'content'         => $request->content,
         ]);
 
-        // Load relationships
         $reply->load('user', 'childReplies.user');
 
-        // 🔔 TRIGGER NOTIFICATION
+        // ✅ Kirim FCM — dibungkus try-catch agar tidak ganggu response
         if ($review->user_id !== $user->id) {
-            // Buat notification record
-            $notification = ReplyNotification::create([
-                'reply_id'        => $reply->id,
-                'recipient_id'    => $review->user_id,
-                'sender_id'       => $user->id,
-                'delivery_status' => 'pending',
-            ]);
+            try {
+                $notification = ReplyNotification::create([
+                    'reply_id'        => $reply->id,
+                    'recipient_id'    => $review->user_id,
+                    'sender_id'       => $user->id,
+                    'delivery_status' => 'pending',
+                ]);
 
-            // Send FCM asynchronously (background job better)
-            // Untuk now, send langsung (bisa di-queue nanti)
-            $this->fcmService->sendReplyNotification($notification);
+                // Buat FcmService manual, bukan inject
+                $fcmService = new FcmService();
+                $fcmService->sendReplyNotification($notification);
+
+            } catch (\Exception $e) {
+                // FCM gagal tidak boleh gagalkan reply
+                \Log::error('FCM error (non-fatal): ' . $e->getMessage());
+            }
         }
 
         return response()->json([

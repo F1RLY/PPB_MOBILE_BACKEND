@@ -165,7 +165,10 @@ class Reply extends Model
      */
     public function getIsUpdatedAttribute(): bool
     {
-        return !$this->updated_at->isSameAs($this->created_at);
+        if (!$this->updated_at || !$this->created_at) {
+            return false;
+        }
+        return $this->updated_at->timestamp !== $this->created_at->timestamp;
     }
 
     // ───────────────────────────────────────────────────────────────────────

@@ -42,16 +42,6 @@ class CreateReplyRequest extends FormRequest
         ];
     }
 
-    /**
-     * Prepare the data for validation.
-     */
-    protected function prepareForValidation(): void
-    {
-        // Trim whitespace
-        $this->merge([
-            'content' => trim($this->content ?? ''),
-        ]);
-    }
 
     /**
      * Handle a failed validation attempt.
@@ -66,4 +56,25 @@ class CreateReplyRequest extends FormRequest
             ], 422)
         );
     }
+    /**
+     * Prepare the data for validation.
+     */
+
+    
+    protected function prepareForValidation(): void
+    {
+        $content = $this->content ?? '';
+        
+        // Kalau content adalah JSON string seperti {"content":"tes"}, decode dulu
+        if (str_starts_with($content, '{')) {
+            $decoded = json_decode($content, true);
+            if (isset($decoded['content'])) {
+                $content = $decoded['content'];
+            }
+        }
+    
+    $this->merge([
+        'content' => trim($content),
+    ]);
+}
 }
