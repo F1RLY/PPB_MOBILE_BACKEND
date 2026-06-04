@@ -16,11 +16,15 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
+        'fcm_token', // ← TAMBAH
+
     ];
 
     protected $hidden = [
         'password',
         'remember_token',
+        'fcm_token', // ← TAMBAH
+
     ];
 
     protected function casts(): array
